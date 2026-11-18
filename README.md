@@ -60,6 +60,18 @@ Actions like adding an expense never train anything, so they respond instantly. 
 
 `engine.sample_state` generates 120 days of synthetic spending with built-in patterns: Fridays and Saturdays cost more, the first days after payday are splurgier, the last week of the month is leaner, plus random noise and three one-off big purchases. These are what the models are expected to discover. Your own data replaces this when you choose **Start fresh** in Profile.
 
+## Project report
+
+`report/ML_Project_Report_Chillar_ML.docx` is the 21MCI002F project report (SRM template). Everything in it is regenerated from the code:
+
+```bash
+.venv/bin/pip install -r report/requirements.txt
+.venv/bin/python report/make_figures.py        # re-runs all models on 5 seeds → report/metrics.json + report/figures/
+.venv/bin/python report/build_report.py        # → report/ML_Project_Report_Chillar_ML.docx
+```
+
+`report/page_map.py` reads a PDF export of the report to fill in the table-of-contents page numbers (pass the resulting JSON to `build_report.py`).
+
 ## Files
 
 - `app.py`: stateless Flask JSON API and page server
