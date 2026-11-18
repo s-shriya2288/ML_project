@@ -53,7 +53,8 @@ def normalize(s):
     for e in s.get("expenses", [])[:20000]:
         if e.get("cat") in CAT_NAMES and r2(e.get("amount")) > 0:
             out["expenses"].append(dict(id=str(e.get("id") or uid())[:20], amount=r2(e["amount"]), cat=e["cat"], date=pd(e["date"]).isoformat(),
-                                        note=str(e.get("note", ""))[:60], pay=str(e.get("pay", "UPI"))[:10], ts=float(e.get("ts") or 0)))
+                                        note=str(e.get("note", ""))[:60], pay=str(e.get("pay", "UPI"))[:10], ts=float(e.get("ts") or 0),
+                                        **({"ref": str(e["ref"])[:60], "src": str(e.get("src", ""))[:12]} if e.get("ref") else {})))
     for m in s.get("moves", [])[:20000]:
         if m.get("type") in ("save", "carry") and r2(m.get("amount")) > 0:
             mv = {"id": str(m.get("id") or uid())[:20], "ts": float(m.get("ts") or 0), "type": m["type"], "from": pd(m["from"]).isoformat(), "amount": r2(m["amount"])}

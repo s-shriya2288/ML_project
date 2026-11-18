@@ -14,7 +14,7 @@ from engine import CATS, CAT_NAMES, Engine, add_days, r2, today, uid
 
 warnings.filterwarnings("ignore")
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # a few years of expenses fits comfortably
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # years of expenses, or a PhonePe statement PDF (Vercel caps bodies at 4.5 MB)
 PAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
 
@@ -100,6 +100,12 @@ def body_state():
 def index(): return send_from_directory(PAGE_DIR, "index.html")  # plain file: the page is pure JS, no Jinja
 
 
+@app.get("/ChillarML.apk")
+def apk():
+    return send_from_directory(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"), "ChillarML.apk",
+                               mimetype="application/vnd.android.package-archive", as_attachment=True)
+
+
 @app.post("/api/setup")
 def setup():
     b = request.get_json(silent=True) or {}
@@ -161,6 +167,46 @@ def lab():
     if b.get("retrain"): ml().forget(s)
     M = ml().models(s, evaluate=True)
     return jsonify(metrics=M["metrics"], trained_at=M["trained_at"], train_seconds=M["train_seconds"])
+
+
+# ---------- importing real UPI spending ----------
+def import_result(s, res, source):
+    s["updatedAt"] = time.time()
+    return jsonify(state=s, snap=snapshot(s), result=res, source=source)
+
+
+@app.post("/api/import/sms")
+def import_sms():
+    """Debits parsed on the phone by the Android app. The SMS text itself never leaves the phone."""
+    import importer
+    b, s = body_state()
+    txns = b.get("txns")
+    if not isinstance(txns, list): fail("No transactions sent")
+    return import_result(s, importer.add_transactions(s, txns, "sms", ml().suggest), "sms")
+
+
+@app.post("/api/import/statement")
+def import_statement():
+    """A PhonePe statement PDF, uploaded with the visitor's state as a form field."""
+    import json
+    import importer
+    f = request.files.get("file")
+    if not f: fail("Choose your PhonePe statement PDF")
+    try:
+        s = engine.normalize(json.loads(request.form.get("state", "")))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        fail("Missing or damaged app data")
+    try:
+        text = importer.statement_text(f.read(), request.form.get("password", ""))
+    except ValueError as e:
+        fail(str(e))
+    except Exception:
+        fail("Couldn't read that PDF. Make sure it's the statement PhonePe emailed or downloaded.")
+    txns, credits = importer.parse_phonepe(text)
+    if not txns and not credits: fail("No PhonePe transactions found in that PDF.")
+    res = importer.add_transactions(s, txns, "phonepe", ml().suggest)
+    res["credits"] = credits
+    return import_result(s, res, "phonepe")
 
 
 @app.errorhandler(400)

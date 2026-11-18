@@ -298,17 +298,47 @@ function aiSummary() {
 }
 function expRow(e) {
   return `<div class="row tap" data-act="edit" data-id="${e.id}" role="button" tabindex="0"><div class="cdot" style="background:${COLORS[e.cat]}">${e.catName[0]}</div>
-    <div class="rm"><div class="rt">${esc(e.note || e.catName)} ${INS && INS.flagged.includes(e.id) ? `<span class="pill ai">unusual</span>` : ""}</div><div class="rs">${e.catName} · ${esc(e.pay || "UPI")} · ${dname(e.date)}</div></div><div class="ra">${money(e.amount)}</div></div>`;
+    <div class="rm"><div class="rt">${esc(e.note || e.catName)} ${INS && INS.flagged.includes(e.id) ? `<span class="pill ai">unusual</span>` : ""}</div><div class="rs">${e.catName} · ${e.src === "phonepe" ? "from PhonePe" : e.src === "sms" ? "from SMS" : esc(e.pay || "UPI")} · ${dname(e.date)}</div></div><div class="ra">${money(e.amount)}</div></div>`;
 }
 function expenses() {
   const t = today(), from = filter === "week" ? new Date(Date.now() - 6 * 864e5) : filter === "month" ? new Date(S.month.cyc.start + "T00:00") : new Date(0);
   const list = S.expenses.filter(e => new Date(e.date + "T00:00") >= new Date(from.toDateString()));
   return `<div class="topbar"><div><h1>Expenses</h1><p>Type what you bought and the classifier picks the category for you.</p></div></div>
   <section class="card"><div class="card-h"><h2>Add an expense</h2><span class="pill ai">auto-category</span></div>${expForm()}</section>
+  ${importCard()}
   <section class="card"><div class="card-h"><h2>History</h2><div class="chips">${[["week","7 days"],["month","This month"],["all","All"]].map(([f, l]) => `<button class="btn btn-sm ${filter === f ? "btn-primary" : "btn-ghost"}" data-act="filter" data-f="${f}">${l}</button>`).join("")}</div></div>
     <p class="muted" style="margin:-4px 0 8px;font-size:13px">${list.length} expenses · ${money(list.reduce((a, e) => a + e.amount, 0))} · <span class="pill ai">unusual</span> = flagged by the anomaly detector</p>
     ${list.map(expRow).join("") || `<div class="empty">Nothing in this range.</div>`}</section>`;
 }
+function importCard() {
+  const android = !!window.ChillarAndroid;
+  return `<section class="card ai"><div class="card-h"><h2>Import from PhonePe & UPI</h2><span class="pill ai">auto-categorised</span></div>
+    <div class="grid g2">
+      <div><b>UPI SMS alerts</b><p class="explain" style="margin:4px 0 12px">Reads your bank's debit SMS for PhonePe, GPay and any UPI app. Only the amount, date, payee and reference are kept; the SMS text never leaves your phone.</p>
+        ${android ? `<button class="btn btn-ai" data-act="import-sms">Import from SMS</button>` : `<p class="muted" style="font-size:13px;margin:0">Works in the Chillar Android app.</p>`}</div>
+      <div><b>PhonePe statement</b><p class="explain" style="margin:4px 0 12px">In PhonePe: History → Download statement (PDF), then upload it here.</p>
+        <form class="form" id="stmt-form"><input class="input" type="file" id="stmt-file" accept="application/pdf,.pdf" required>
+          <input class="input" id="stmt-pass" placeholder="PDF password, if it has one" autocomplete="off"><div><button class="btn btn-soft" type="submit">Import statement</button></div></form></div>
+    </div>
+    <p class="explain">Only payments since you started (${short(S.profile.startDate)}) are imported. Money you received is ignored, and anything already logged is skipped.</p></section>`;
+}
+function importDone(j) {
+  STATE = j.state; S = j.snap; keep(); INS = null; LAB = null; render();
+  const r = j.result, cats = Object.entries(r.by_cat).map(([k, v]) => `${v} ${esc(k)}`).join(", ");
+  const skipped = [r.duplicates && `${r.duplicates} already logged`, r.older && `${r.older} from before you started`, r.credits && `${r.credits} money received`].filter(Boolean).join(", ");
+  toast(r.added ? `Imported <b>${r.added}</b> payment${r.added > 1 ? "s" : ""} (${cats}).${skipped ? " Skipped " + skipped + "." : ""}` : `Nothing new to import.${skipped ? " Skipped " + skipped + "." : ""}`);
+}
+async function importSms() {
+  const A = window.ChillarAndroid; if (!A) return;
+  if (!A.hasSmsPermission()) { A.requestSmsPermission(); return; } // the app calls chillarSmsPermission() with the answer
+  const since = new Date(S.profile.startDate + "T00:00").getTime();
+  let txns = [];
+  try { txns = JSON.parse(A.readUpiSms(since)); } catch { toast("Couldn't read your SMS."); return; }
+  if (!txns.length) { toast(`No UPI debit SMS found since ${short(S.profile.startDate)}.`); return; }
+  toast(`Found ${txns.length} UPI payment${txns.length > 1 ? "s" : ""}. Categorising…`);
+  importDone(await api("/api/import/sms", {txns}));
+}
+window.chillarSmsPermission = granted => granted ? importSms() : toast("No problem. You can still upload a PhonePe statement instead.");
 function expForm(e) {
   const x = e || {amount: "", note: "", cat: "food", date: today(), pay: "UPI"};
   return `<form class="form" id="exp-form" data-id="${e ? e.id : ""}">
@@ -404,6 +434,7 @@ function profile() {
     <div class="two"><div><label class="lb" for="s-m">Monthly allowance</label><input class="input" id="s-m" type="number" min="1" value="${p.monthly}"></div><div><label class="lb" for="s-d">Daily allowance</label><input class="input" id="s-d" type="number" min="1" value="${p.daily}"></div></div>
     <div><button class="btn btn-primary" type="submit">Save</button></div></form></section>
   <section class="card"><div class="card-h"><h2>Your data</h2></div><p class="muted" style="margin-top:0">Virtual money only: no bank links, no payments. Your data stays in this browser; the server only uses it to answer each request and never stores it. Clearing browser data erases it.</p>
+    ${window.ChillarAndroid ? "" : `<p style="margin:0 0 14px"><a class="btn btn-ai" href="/ChillarML.apk" download>Get the Android app</a></p><p class="explain" style="margin:-6px 0 14px">Adds automatic import from your UPI SMS. Open this page on your phone, download, then allow "Install unknown apps" for your browser.</p>`}
     <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-ghost" data-act="reset" data-s="1">Load example data</button><button class="btn btn-danger" data-act="reset" data-s="0">Start fresh</button></div></section></div>`;
 }
 function renderSetup() {
@@ -456,6 +487,7 @@ document.addEventListener("click", async ev => {
     case "goal-add": case "goal-fill": case "goal-back": { const g = S.goals.find(x => x.id === id);
       const amt = a === "goal-back" ? -g.saved : a === "goal-add" ? Math.min(100, S.jar.free, g.target - g.saved) : Math.min(S.jar.free, g.target - g.saved);
       if (amt) await apply(api("/api/do/goal_money", {id, amount: amt}), amt > 0 ? `${money(amt)} added to ${esc(g.name)}.` : "Moved back to your free jar."); break; }
+    case "import-sms": importSms(); break;
     case "goal-del": await apply(api("/api/do/goal_delete", {id}), "Goal deleted."); break;
     case "retrain": LAB = null; render(); LAB = await api("/api/lab", {retrain: true}); INS = null; render(); toast(`All 5 models retrained in ${LAB.train_seconds}s.`); break;
     case "reset": if (confirm(el.dataset.s === "1" ? "Replace everything with example data?" : "Erase all expenses and savings and start fresh?")) await apply(api("/api/reset", {sample: el.dataset.s === "1"}), "Done."); break;
@@ -479,6 +511,15 @@ document.addEventListener("submit", async ev => {
     STATE = j.state; S = j.snap; keep(); INS = null; LAB = null; catTouched = false; render();
     const over = S.today.left < 0 && body.date === S.today.d;
     toast(eid ? "Expense updated." : `Logged ${money(body.amount)}.${over ? ` You're ${money(-S.today.left)} over today; it comes out of the monthly buffer.` : ""}`);
+  }
+  if (f.id === "stmt-form") {
+    const fd = new FormData(); fd.append("file", f.querySelector("#stmt-file").files[0]); fd.append("password", f.querySelector("#stmt-pass").value); fd.append("state", JSON.stringify(STATE));
+    const btn = f.querySelector("button"); btn.disabled = true; btn.textContent = "Reading statement…";
+    try {
+      const r = await fetch("/api/import/statement", {method: "POST", body: fd}); const j = await r.json().catch(() => ({}));
+      if (!r.ok) { toast(esc(j.error || "Couldn't import that file.")); return; }
+      importDone(j);
+    } finally { btn.disabled = false; btn.textContent = "Import statement"; }
   }
   if (f.id === "goal-form") await apply(api("/api/do/goal_add", {name: f.querySelector("#g-name").value, target: +f.querySelector("#g-target").value}), "Goal added.");
   if (f.id === "set-form") await apply(api("/api/do/settings", {name: $("#s-name").value, monthly: +$("#s-m").value, daily: +$("#s-d").value}), "Settings saved.");

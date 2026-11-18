@@ -20,6 +20,17 @@ The server is stateless, so it runs as a Vercel Python function with no setup: i
 
 Each visitor's data is kept in their own browser (`localStorage`) and sent with every request. The server applies the money rules, trains the models and sends the result back, but never stores anything. Visitors never see each other's data. Clearing browser data erases it.
 
+## Android app and PhonePe import
+
+`android/` is a small native Android app (plain Java, no libraries) that shows the live site and adds one native power: reading UPI debit SMS. Build it with `cd android && ./gradlew assembleDebug`, or download `/ChillarML.apk` from the deployed site.
+
+There are two ways to bring in real spending (Expenses → Import from PhonePe & UPI):
+
+- **UPI SMS** (Android app only): with your permission, `UpiSms.java` reads bank debit alerts (SBI, HDFC, ICICI, Axis, Kotak formats and card spends) on the phone, skipping OTPs, requests, refunds and money received. Only the amount, date, payee and reference are sent to the server; the SMS text never leaves the phone. It works for PhonePe, GPay or any UPI app.
+- **PhonePe statement PDF**: PhonePe → History → Download statement, then upload. `importer.py` reads the debits and ignores credits. Password-protected PDFs are supported.
+
+Imported payments are auto-categorised by the classifier from the payee name. References already imported, and manual entries with the same date and amount, are skipped. Only payments since your start date count, because earlier days have no allowance.
+
 ## How the money works
 
 - Each day gets the daily allowance plus anything carried into it.
@@ -55,3 +66,5 @@ Actions like adding an expense never train anything, so they respond instantly. 
 - `engine.py`: money rules, input validation and the example-data generator
 - `ml.py`: the five models, evaluation and predictions
 - `templates/index.html`: the single-page web UI (vanilla JS, hand-drawn SVG charts)
+- `importer.py`: PhonePe statement parser and the shared import step
+- `android/`: the Android app; `static/ChillarML.apk` is the built APK the site serves
