@@ -87,11 +87,33 @@ def train_classifier(state):
     return final, metrics
 
 
-def suggest(model, note, top=3):
+_base = None
+
+
+def base_classifier():
+    """Trained once per server on the starter corpus plus common student phrases, then reused for every visitor."""
+    global _base
+    if _base is None:
+        from engine import NOTES
+        X = [n for ns in SEED.values() for n in ns] + [n for ns in NOTES.values() for n in ns]
+        y = [c for c, ns in SEED.items() for _ in ns] + [c for c, ns in NOTES.items() for _ in ns]
+        _base = _text_pipe().fit(X, y)
+    return _base
+
+
+def suggest(state, note, top=3):
+    """Shared model's guess, blended with how *you* filed similar notes before (same first two words)."""
     if not clean(note): return []
-    p = model.predict_proba([note])[0]
-    order = np.argsort(p)[::-1][:top]
-    return [dict(cat=str(model.classes_[i]), name=CAT_NAMES[str(model.classes_[i])], p=round(float(p[i]), 3)) for i in order]
+    m = base_classifier()
+    p = dict(zip(m.classes_, m.predict_proba([note])[0]))
+    key = group_key(note)
+    mine = Counter(e["cat"] for e in state["expenses"] if key and group_key(e.get("note")) == key)
+    n = sum(mine.values())
+    if n:
+        w = n / (n + 1)  # one past note counts as much as the model; more notes count more
+        p = {c: (1 - w) * p.get(c, 0) + w * mine.get(c, 0) / n for c in set(p) | set(mine)}
+    order = sorted(p, key=p.get, reverse=True)[:top]
+    return [dict(cat=str(c), name=CAT_NAMES[str(c)], p=round(float(p[c]), 3)) for c in order]
 
 
 # ---------- shared daily table ----------
@@ -132,7 +154,7 @@ def lag_feats(hist):
 
 
 # ---------- 2. spending forecaster ----------
-def train_forecaster(state, df):
+def train_forecaster(state, df, evaluate=True):
     payday = state["profile"]["payday"]
     if len(df) < 35:
         return None, dict(ready=False, reason=f"Needs 35 days of history to train; you have {len(df)}.")
@@ -146,21 +168,25 @@ def train_forecaster(state, df):
         rows.append(r)
     X = pd.DataFrame(rows)
     cols = [c for c in X.columns if c not in ("y", "actual", "date")]
+    if not evaluate: return (_rf().fit(X[cols], X["y"]), cols), dict(ready=True)
     test_n = min(21, len(X) // 4)
     tr, te = X.iloc[:-test_n], X.iloc[-test_n:]
-    rf = RandomForestRegressor(n_estimators=300, min_samples_leaf=5, max_depth=6, random_state=0).fit(tr[cols], tr["y"])
+    rf = _rf().fit(tr[cols], tr["y"])
     pred = rf.predict(te[cols])
     base = te["roll7"].values
     imp = dict(zip(cols, rf.feature_importances_))
     grouped = {g: float(sum(imp.get(c, 0) for c in cs)) for g, cs in FEATURE_GROUPS.items() if any(c in imp for c in cs)}
-    metrics = dict(ready=True, algorithm="Random Forest regressor (300 trees, depth ≤ 6) on calendar + lag features", n_train=int(len(tr)), n_test=int(test_n),
+    metrics = dict(ready=True, algorithm="Random Forest regressor (120 trees, depth ≤ 6) on calendar + lag features", n_train=int(len(tr)), n_test=int(test_n),
                    mae=float(mean_absolute_error(te["actual"], pred)), rmse=float(math.sqrt(mean_squared_error(te["actual"], pred))),
                    baseline="average of the previous 7 days", baseline_mae=float(mean_absolute_error(te["actual"], base)),
                    baseline_rmse=float(math.sqrt(mean_squared_error(te["actual"], base))), spike_cap=float(cap),
                    importance=dict(sorted(grouped.items(), key=lambda kv: -kv[1])),
                    test_curve=[dict(date=d, actual=float(a), predicted=round(float(p), 1)) for d, a, p in zip(te["date"], te["actual"], pred)])
-    final = RandomForestRegressor(n_estimators=300, min_samples_leaf=5, max_depth=6, random_state=0).fit(X[cols], X["y"])
+    final = _rf().fit(X[cols], X["y"])
     return (final, cols), metrics
+
+
+def _rf(): return RandomForestRegressor(n_estimators=120, min_samples_leaf=5, max_depth=6, random_state=0)
 
 
 def forecast(state, model, df, until):
@@ -173,14 +199,14 @@ def forecast(state, model, df, until):
     for d in days_in(today(), until):
         r = calendar_feats(pd.Timestamp(d), payday)
         r.update(lag_feats(hist))
-        p = max(0.0, float(rf.predict(pd.DataFrame([r])[cols])[0]))
+        p = max(0.0, float(rf.predict(np.array([[r[c] for c in cols]]))[0]))
         hist.append(p)
         out.append(dict(date=d, predicted=round(p, 1)))
     return out
 
 
 # ---------- 3. overspend risk ----------
-def train_risk(state, df):
+def train_risk(state, df, evaluate=True):
     payday = state["profile"]["payday"]
     if len(df) < 35 or df["over"].sum() < 4:
         return None, dict(ready=False, reason="Needs 35+ days with at least 4 overspend days to learn from.")
@@ -191,9 +217,10 @@ def train_risk(state, df):
         rows.append(r)
     X = pd.DataFrame(rows)
     cols = [c for c in X.columns if c != "y"]
+    mk = lambda: make_pipeline(StandardScaler(), LogisticRegression(class_weight="balanced", max_iter=2000))
+    if not evaluate: return (mk().fit(X[cols], X["y"]), cols), dict(ready=True)
     test_n = min(28, len(X) // 3)
     tr, te = X.iloc[:-test_n], X.iloc[-test_n:]
-    mk = lambda: make_pipeline(StandardScaler(), LogisticRegression(class_weight="balanced", max_iter=2000))
     m = mk().fit(tr[cols], tr["y"])
     p = m.predict_proba(te[cols])[:, 1]
     auc = float(roc_auc_score(te["y"], p)) if te["y"].nunique() == 2 else None
@@ -227,14 +254,14 @@ def train_anomalies(state):
     med = df.groupby("cat")["amount"].median()
     df["ratio"] = df["amount"] / df["cat"].map(med)
     X = np.column_stack([np.log1p(df["amount"]), np.log(df["ratio"]), df["dow"] >= 4, df["hour"] / 24])
-    iso = IsolationForest(n_estimators=300, contamination=0.03, random_state=0).fit(X)
+    iso = IsolationForest(n_estimators=120, contamination=0.03, random_state=0).fit(X)
     df["score"] = -iso.score_samples(X)
     df["flag"] = iso.predict(X) == -1
     flagged = df[df["flag"]].sort_values("date", ascending=False)
     out = [dict(id=r.id, date=r.date, note=r.note, cat=CAT_NAMES[r.cat], amount=float(r.amount),
                 why=f"{r.ratio:.1f}× your usual {CAT_NAMES[r.cat]} spend (typical {med[r.cat]:.0f})" if r.ratio >= 1.5 else
                     f"Unusual time or day for {CAT_NAMES[r.cat]}", score=round(float(r.score), 3)) for r in flagged.itertuples()]
-    return out, dict(ready=True, algorithm="Isolation Forest (300 trees, 3% contamination)", n=int(len(df)), flagged=int(df["flag"].sum()),
+    return out, dict(ready=True, algorithm="Isolation Forest (120 trees, 3% contamination)", n=int(len(df)), flagged=int(df["flag"].sum()),
                      features=["log amount", "amount ÷ category median", "weekend", "hour of day"])
 
 
@@ -250,7 +277,7 @@ def train_clusters(state):
     if len(piv) < 8: return None, dict(ready=False, reason="Needs 8 weeks of expenses.")
     share = piv.div(piv.sum(axis=1).replace(0, 1), axis=0)
     X = np.column_stack([share.values, np.log1p(piv.sum(axis=1).values) / 8])
-    km = KMeans(n_clusters=3, n_init=20, random_state=0).fit(X)
+    km = KMeans(n_clusters=3, n_init=5, random_state=0).fit(X)
     totals = piv.sum(axis=1).groupby(km.labels_).mean()
     names = {}
     for k in range(3):
@@ -275,23 +302,26 @@ _cache = OrderedDict()  # data hash → trained models; a few entries so several
 def _key(state): return hashlib.sha1(json.dumps(state, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def forget(state): _cache.pop(_key(state), None)
+def forget(state):
+    for k in (_key(state), _key(state) + ":eval"): _cache.pop(k, None)
 
 
-def models(state):
-    key = _key(state)
+def models(state, evaluate=False):
+    """evaluate=False: fit the prediction models only (AI Insights). evaluate=True: also score every model on held-out
+    data and cross-validate the classifier (ML Lab). Both are cached by a hash of the visitor's data."""
+    key = _key(state) + (":eval" if evaluate else "")
     if key in _cache:
         _cache.move_to_end(key)
         return _cache[key]
     t0 = time.time()
     df = daily_frame(state)
-    clf, clf_m = train_classifier(state)
-    fc, fc_m = train_forecaster(state, df)
-    rk, rk_m = train_risk(state, df)
+    fc, fc_m = train_forecaster(state, df, evaluate)
+    rk, rk_m = train_risk(state, df, evaluate)
     anomalies, an_m = train_anomalies(state)
     clusters, cl_m = train_clusters(state)
-    M = dict(df=df, clf=clf, fc=fc, risk=rk, anomalies=anomalies, clusters=clusters,
-             metrics=dict(classifier=clf_m, forecaster=fc_m, risk=rk_m, anomalies=an_m, clusters=cl_m),
+    metrics = dict(forecaster=fc_m, risk=rk_m, anomalies=an_m, clusters=cl_m)
+    if evaluate: metrics["classifier"] = train_classifier(state)[1]
+    M = dict(df=df, fc=fc, risk=rk, anomalies=anomalies, clusters=clusters, metrics=metrics,
              trained_at=time.time(), train_seconds=round(time.time() - t0, 2))
     _cache[key] = M
     while len(_cache) > 12: _cache.popitem(last=False)
@@ -315,4 +345,4 @@ def insights(state):
         today_pred=today_pred, spent_today=spent_today, risk=risk_today(state, M["risk"], M["df"]),
         month_end=dict(projected=projected, spent=month["spent"], allowance=state["profile"]["monthly"], saved=month["saved"],
                        room=round(state["profile"]["monthly"] - projected - month["saved"]), days_left=len(fc)),
-        anomalies=M["anomalies"][:8], clusters=M["clusters"], ready={k: v.get("ready", True) for k, v in M["metrics"].items()})
+        anomalies=M["anomalies"][:8], flagged=[x["id"] for x in M["anomalies"]], clusters=M["clusters"], ready={k: v.get("ready", True) for k, v in M["metrics"].items()})

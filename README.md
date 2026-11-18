@@ -37,7 +37,7 @@ Each visitor's data is kept in their own browser (`localStorage`) and sent with 
 | 4 | Flag unusual expenses | Isolation Forest on log amount, amount ÷ category median, weekend and hour | Unsupervised; flags about 3% of expenses with a plain-language reason | None |
 | 5 | Name your "week types" | K-Means (k = 3) on each week's category mix + log weekly total | Silhouette score | None |
 
-Models retrain automatically whenever your data changes (about 0.6 s on 4 months of data). They're cached in memory between changes. The **ML Lab** page shows each model's metrics next to its baseline. The **AI Insights** page shows the predictions.
+Actions like adding an expense never train anything, so they respond instantly. AI Insights fits the prediction models in the background (about 0.2 s on 4 months of data), and the full held-out evaluation and cross-validation run only when you open ML Lab. Results are cached per visitor in memory. The **ML Lab** page shows each model's metrics next to its baseline. The **AI Insights** page shows the predictions.
 
 ### Results on the example data (seed 7)
 

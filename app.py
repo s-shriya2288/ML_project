@@ -10,7 +10,6 @@ import warnings
 from flask import Flask, abort, jsonify, request, send_from_directory
 
 import engine
-import ml
 from engine import CATS, CAT_NAMES, Engine, add_days, r2, today, uid
 
 warnings.filterwarnings("ignore")
@@ -23,10 +22,9 @@ def snapshot(s):
     e = Engine(s)
     t = today()
     exps = sorted(s["expenses"], key=lambda x: (x["date"], x.get("ts", 0)), reverse=True)
-    flagged = {a["id"] for a in ml.models(s)["anomalies"]}
     return dict(profile=s["profile"], sample=s.get("sample", False), today=e.day(t), month=e.month(e.cycle_of(t)), jar=e.jar(),
                 pending=e.pending(), streaks=e.streaks(), xp=e.xp(), badges=e.badges(), goals=s["goals"], budgets=s["budgets"],
-                expenses=[{**x, "catName": CAT_NAMES[x["cat"]], "unusual": x["id"] in flagged} for x in exps[:300]],
+                expenses=[{**x, "catName": CAT_NAMES[x["cat"]]} for x in exps[:300]],
                 moves=sorted(s["moves"] + s["jarlog"], key=lambda m: m["ts"], reverse=True)[:30],
                 week=[e.day(d) for d in engine.days_in(add_days(t, -6), t)], cats=CATS)
 
@@ -139,23 +137,29 @@ def snap():
 
 
 # ---------- machine learning endpoints ----------
+# scikit-learn and pandas are imported on first use, so the plain money endpoints start fast on a cold server.
+def ml():
+    import ml as m
+    return m
+
+
 @app.post("/api/suggest")
 def suggest():
     b, s = body_state()
-    return jsonify(ml.suggest(ml.models(s)["clf"], str(b.get("note", ""))[:80]))
+    return jsonify(ml().suggest(s, str(b.get("note", ""))[:80]))
 
 
 @app.post("/api/insights")
 def insights():
     _, s = body_state()
-    return jsonify(ml.insights(s))
+    return jsonify(ml().insights(s))
 
 
 @app.post("/api/lab")
 def lab():
     b, s = body_state()
-    if b.get("retrain"): ml.forget(s)
-    M = ml.models(s)
+    if b.get("retrain"): ml().forget(s)
+    M = ml().models(s, evaluate=True)
     return jsonify(metrics=M["metrics"], trained_at=M["trained_at"], train_seconds=M["train_seconds"])
 
 

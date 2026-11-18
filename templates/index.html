@@ -246,10 +246,16 @@ function render() {
   after();
 }
 function after() {
-  if (page === "home" || page === "predict") loadInsights();
+  if (page === "home" || page === "predict" || page === "expenses") loadInsights();
   if (page === "lab") loadLab();
 }
-async function loadInsights() { if (!INS) { INS = await api("/api/insights"); if (page === "home" || page === "predict") render(); } }
+let insBusy = false; // one request at a time; the page renders immediately and fills in when predictions arrive
+async function loadInsights() {
+  if (INS || insBusy) return; insBusy = true;
+  try { const v = STATE.updatedAt; const r = await api("/api/insights"); if (STATE.updatedAt === v) { INS = r; if (["home", "predict", "expenses"].includes(page)) render(); } }
+  finally { insBusy = false; }
+  if (!INS && ["home", "predict", "expenses"].includes(page)) loadInsights();
+}
 async function loadLab() { if (!LAB) { LAB = await api("/api/lab"); if (page === "lab") render(); } }
 function go(p) { page = p; location.hash = p; render(); scrollTo(0, 0); }
 
@@ -292,7 +298,7 @@ function aiSummary() {
 }
 function expRow(e) {
   return `<div class="row tap" data-act="edit" data-id="${e.id}" role="button" tabindex="0"><div class="cdot" style="background:${COLORS[e.cat]}">${e.catName[0]}</div>
-    <div class="rm"><div class="rt">${esc(e.note || e.catName)} ${e.unusual ? `<span class="pill ai">unusual</span>` : ""}</div><div class="rs">${e.catName} · ${esc(e.pay || "UPI")} · ${dname(e.date)}</div></div><div class="ra">${money(e.amount)}</div></div>`;
+    <div class="rm"><div class="rt">${esc(e.note || e.catName)} ${INS && INS.flagged.includes(e.id) ? `<span class="pill ai">unusual</span>` : ""}</div><div class="rs">${e.catName} · ${esc(e.pay || "UPI")} · ${dname(e.date)}</div></div><div class="ra">${money(e.amount)}</div></div>`;
 }
 function expenses() {
   const t = today(), from = filter === "week" ? new Date(Date.now() - 6 * 864e5) : filter === "month" ? new Date(S.month.cyc.start + "T00:00") : new Date(0);
@@ -420,14 +426,16 @@ function closingSheet(d) {
     <button class="choice" data-act="decide" data-d="${d}" data-c="carry"><span><b>Carry it forward</b><span>Add it to the next day's spending balance.</span></span></button>
     <button class="choice" data-act="decide" data-d="${d}" data-c="later"><span><b>Decide later</b><span>Nothing moves until you choose.</span></span></button>`);
 }
+let sugN = 0;
 async function suggestInto(note, box, form) {
   clearTimeout(sugT);
   sugT = setTimeout(async () => {
     if (!note.trim()) { box.innerHTML = ""; return; }
-    const s = await api("/api/suggest", {note});
+    const n = ++sugN; const s = await api("/api/suggest", {note});
+    if (n !== sugN) return; // a newer keystroke already asked again
     box.innerHTML = `<span class="lab">Model thinks:</span>` + s.map((x, i) => `<button type="button" class="${i === 0 ? "on" : ""}" data-pick="${x.cat}">${esc(x.name)} · ${pct(x.p)}</button>`).join("");
     if (form && s[0] && !catTouched) form.querySelector("#f-cat").value = s[0].cat;
-  }, 220);
+  }, 300);
 }
 
 /* ---------- events ---------- */

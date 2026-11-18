@@ -4,3 +4,4 @@ __pycache__/
 .vercel/
 data.json
 .DS_Store
+.vercel
