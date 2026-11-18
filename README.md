@@ -1,5 +1,7 @@
 # Chillar ML
 
+📄 **Project report (21MCI002F):** [read the PDF](ML_Project_Report_Chillar_ML.pdf) · [Word version](report/ML_Project_Report_Chillar_ML.docx)
+
 A pocket-money tracker for students with a fixed virtual daily allowance (₹150 by default), a savings jar, and five machine-learning models that learn from your own spending. It only tracks virtual money: no bank links and no payments.
 
 ## Run it
