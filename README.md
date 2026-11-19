@@ -1,7 +1,5 @@
 # Chillar ML
 
-📄 **Project report (21MCI002F):** [read the PDF](ML_Project_Report_Chillar_ML.pdf) · [Word version](report/ML_Project_Report_Chillar_ML.docx)
-
 Five machine-learning models on a student's daily spending, written entirely in Python and shown in a Dash dashboard.
 
 🌐 **Live:** https://ml-project-cyan-three.vercel.app
@@ -48,13 +46,4 @@ Results on five independently generated datasets (mean):
 - `chillar/stability_120_150.json`: Stability-tab results for the default settings, precomputed because re-running 15 trainings takes ~40 s on Vercel
 - `chillar/data.py`: dataset generator and daily table
 - `chillar/models.py`: the five models, their evaluation and the seed comparison
-- `chillar/plots.py`: matplotlib charts shared by the dashboard and the report
-- `report/`: the project report and the scripts that rebuild it
-
-## Rebuild the report
-
-```bash
-.venv/bin/pip install -r report/requirements.txt
-.venv/bin/python report/make_figures.py   # re-runs the models → report/metrics.json + report/figures/
-.venv/bin/python report/build_report.py   # → report/ML_Project_Report_Chillar_ML.docx
-```
+- `chillar/plots.py`: matplotlib charts for the dashboard
