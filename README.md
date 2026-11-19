@@ -2,14 +2,16 @@
 
 📄 **Project report (21MCI002F):** [read the PDF](ML_Project_Report_Chillar_ML.pdf) · [Word version](report/ML_Project_Report_Chillar_ML.docx)
 
-Five machine-learning models on a student's daily spending, written entirely in Python and shown in a Streamlit dashboard.
+Five machine-learning models on a student's daily spending, written entirely in Python and shown in a Dash dashboard.
+
+🌐 **Live:** https://ml-project-cyan-three.vercel.app
 
 ## Run it
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/streamlit run app.py
+.venv/bin/python app.py        # → http://127.0.0.1:8050
 ```
 
 The sidebar sets the dataset seed, the number of days and the daily budget (₹150 by default). Each model has its own tab.
@@ -42,7 +44,8 @@ Results on five independently generated datasets (mean):
 
 ## Files
 
-- `app.py`: the Streamlit dashboard
+- `app.py`: the Dash dashboard (`app` is the Flask server Vercel runs)
+- `chillar/stability_120_150.json`: Stability-tab results for the default settings, precomputed because re-running 15 trainings takes ~40 s on Vercel
 - `chillar/data.py`: dataset generator and daily table
 - `chillar/models.py`: the five models, their evaluation and the seed comparison
 - `chillar/plots.py`: matplotlib charts shared by the dashboard and the report

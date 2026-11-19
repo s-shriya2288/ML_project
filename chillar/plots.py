@@ -1,4 +1,4 @@
-"""Matplotlib charts shared by the Streamlit app and the project report."""
+"""Matplotlib charts shared by the Dash app and the project report."""
 import matplotlib
 
 matplotlib.use("Agg")
