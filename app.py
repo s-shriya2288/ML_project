@@ -12,7 +12,7 @@ from functools import lru_cache
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")  # serverless file systems are read-only except /tmp
 warnings.filterwarnings("ignore")
 
-from dash import Dash, Input, Output, dash_table, dcc, html  # noqa: E402
+from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html  # noqa: E402
 
 from chillar import data, models, plots  # noqa: E402
 
@@ -82,6 +82,9 @@ def img(fig):
 def money(v): return f"₹{v:,.0f}"
 
 
+BUTTON = dict(background=FOREST, color="#FBFAF3", border=0, borderRadius="10px", padding="10px 16px", fontSize="14px", fontWeight=600, cursor="pointer")
+
+
 def metric(label, value, note=None, good=None):
     colour = MUTED if good is None else GOOD if good else BAD
     return html.Div([html.Div(label, style=dict(fontSize="13px", color=MUTED)), html.Div(value, style=dict(fontSize="28px", fontWeight=600, color=INK)),
@@ -117,6 +120,10 @@ def tab_data(seed, days, budget):
                     "in the data as true anomalies."),
             row(metric("Expenses", f"{len(df)}"), metric("Days", f"{len(dd)}"), metric("Average per day", money(dd["spent"].mean())),
                 metric("Days over budget", f"{dd['over'].mean():.0%}")),
+            html.Div([html.Button("Download expenses (CSV)", id="dl-expenses-btn", n_clicks=0, style=BUTTON),
+                      html.Button("Download daily table (CSV)", id="dl-daily-btn", n_clicks=0, style=BUTTON)],
+                     style=dict(display="flex", gap="10px", flexWrap="wrap", margin="4px 0 2px")),
+            note(f"Exactly the data on this page: seed {seed}, {days} days, ₹{budget} daily budget."),
             img(plots.eda(dd, budget)), img(plots.category_totals(df)), table(shown, "340px")]
 
 
@@ -223,6 +230,7 @@ main = html.Div([
     dcc.Tabs(id="tab", value="data", children=[dcc.Tab(label=label, value=key) for key, label, _ in TABS],
              style=dict(fontSize="14px"), colors=dict(border=LINE, primary=FOREST, background=BG)),
     dcc.Loading(html.Div(id="content", style=dict(paddingTop="8px")), type="dot", color=FOREST),
+    dcc.Download(id="download"),
 ], style=dict(flex="1 1 0%", padding="20px 32px 60px", minWidth="320px"))
 
 dash_app.layout = html.Div([sidebar, main], style=dict(display="flex", alignItems="stretch", fontFamily=FONT, color=INK, background=BG, minHeight="100vh"))
@@ -248,6 +256,21 @@ def predict(text, seed, days):
                                    html.Div(html.Div(style=dict(width=f"{p * 100:.0f}%", height="8px", background=FOREST, borderRadius="4px")),
                                             style=dict(background=LINE, borderRadius="4px", maxWidth="600px"))], style=dict(margin="8px 0"))
     return html.Div([bar(c, p) for c, p in guesses], style=dict(margin="6px 0 14px"))
+
+
+@dash_app.callback(Output("download", "data"), Input("dl-expenses-btn", "n_clicks"), Input("dl-daily-btn", "n_clicks"),
+                   State("seed", "value"), State("days", "value"), State("budget", "value"), prevent_initial_call=True)
+def download(_expenses, _daily, seed, days, budget):
+    """The generated dataset as CSV, for the sidebar's current settings."""
+    if not ctx.triggered or not (ctx.triggered[0].get("value") or 0): return None  # the buttons appear with n_clicks=0
+    seed, days, budget = settings(seed, days, budget)
+    df, dd = dataset(seed, days, budget)
+    tag = f"seed{seed}_{days}days_budget{budget}"
+    if ctx.triggered_id == "dl-daily-btn":
+        out = dd.reset_index().assign(date=lambda x: x["date"].dt.strftime("%Y-%m-%d"), over_budget=lambda x: x["over"].astype(bool))
+        return dcc.send_data_frame(out[["date", "spent", "over_budget"]].to_csv, f"chillar_daily_{tag}.csv", index=False)
+    out = df.assign(date=df["date"].dt.strftime("%Y-%m-%d"))
+    return dcc.send_data_frame(out[["date", "hour", "category", "note", "amount"]].to_csv, f"chillar_expenses_{tag}.csv", index=False)
 
 
 if __name__ == "__main__":
