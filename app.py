@@ -1,219 +1,141 @@
-"""Chillar ML: the pocket-money jar with machine learning. Run `python app.py`, then open http://127.0.0.1:5050
+"""Chillar ML: five machine-learning models on student spending, as a Streamlit dashboard.
 
-The server is stateless so it can run on serverless hosts like Vercel: each visitor's data lives in their own browser
-(localStorage) and is sent with every request. The server applies the money rules, trains the models and sends the
-updated state back. Nobody's data is stored on the server or shared with other visitors."""
-import os
-import time
+Run:  streamlit run app.py
+"""
 import warnings
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+import pandas as pd
+import streamlit as st
 
-import engine
-from engine import CATS, CAT_NAMES, Engine, add_days, r2, today, uid
+from chillar import data, models, plots
 
 warnings.filterwarnings("ignore")
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # years of expenses, or a PhonePe statement PDF (Vercel caps bodies at 4.5 MB)
-PAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+st.set_page_config(page_title="Chillar ML", page_icon="🪙", layout="wide")
 
 
-def snapshot(s):
-    e = Engine(s)
-    t = today()
-    exps = sorted(s["expenses"], key=lambda x: (x["date"], x.get("ts", 0)), reverse=True)
-    return dict(profile=s["profile"], sample=s.get("sample", False), today=e.day(t), month=e.month(e.cycle_of(t)), jar=e.jar(),
-                pending=e.pending(), streaks=e.streaks(), xp=e.xp(), badges=e.badges(), goals=s["goals"], budgets=s["budgets"],
-                expenses=[{**x, "catName": CAT_NAMES[x["cat"]]} for x in exps[:300]],
-                moves=sorted(s["moves"] + s["jarlog"], key=lambda m: m["ts"], reverse=True)[:30],
-                week=[e.day(d) for d in engine.days_in(add_days(t, -6), t)], cats=CATS)
+@st.cache_data(show_spinner="Generating data and training the five models…")
+def load(seed, days, budget):
+    df = data.generate(days, seed)
+    dd = data.daily(df, budget, days)
+    return df, dd, models.run_all(df, dd)
 
 
-def fail(msg): abort(400, msg)
+@st.cache_data(show_spinner="Re-running on five datasets…")
+def stability(days, budget):
+    return models.compare_seeds(days=days, budget=budget)
 
 
-# ---- actions: each takes (state, body) and changes state in place ----
-def a_add(s, b):
-    amt, d = r2(b.get("amount")), b.get("date") or today()
-    if amt <= 0 or b.get("cat") not in CAT_NAMES or d > today(): fail("Check the amount, category and date")
-    s["expenses"].append(dict(id=uid(), amount=amt, cat=b["cat"], date=d, note=str(b.get("note", ""))[:60], pay=str(b.get("pay", "UPI"))[:10], ts=time.time()))
+def money(v): return f"₹{v:,.0f}"
 
 
-def a_edit(s, b):
-    x = next((q for q in s["expenses"] if q["id"] == b.get("id")), None) or fail("Expense not found")
-    if r2(b.get("amount")) <= 0 or b.get("cat") not in CAT_NAMES or (b.get("date") or x["date"]) > today(): fail("Check the amount, category and date")
-    x.update(amount=r2(b["amount"]), cat=b["cat"], date=b.get("date") or x["date"], note=str(b.get("note", ""))[:60], pay=str(b.get("pay", x.get("pay")))[:10])
+def show(fig):
+    st.pyplot(fig)
+    plots.plt.close(fig)
 
 
-def a_delete(s, b): s["expenses"] = [q for q in s["expenses"] if q["id"] != b.get("id")]
+def vs_baseline(label, model, base, lower_is_better=False, fmt=lambda v: f"{v:.1%}"):
+    better = model < base if lower_is_better else model > base
+    st.metric(label, fmt(model), f"{'better' if better else 'worse'} than baseline ({fmt(base)})",
+              delta_color="normal" if better else "inverse")
 
 
-def a_decide(s, b):
-    d, c, t = b.get("date"), b.get("choice"), today()
-    if c not in ("save", "carry", "later") or not d or Engine(s).day(d)["unused"] <= 0: fail("Nothing to decide for that day")
-    x = Engine(s).day(d)
-    s["later"] = [z for z in s["later"] if z != d]
-    if c == "later":
-        s["later"].append(d)
-        return
-    mv = {"id": uid(), "ts": time.time(), "type": c, "from": d, "amount": x["unused"]}
-    if c == "carry": mv["to"] = add_days(d, 1) if d == t or add_days(d, 1) > t else t
-    s["moves"].append(mv)
+with st.sidebar:
+    st.title("Chillar ML")
+    st.caption("Machine learning on a student's daily spending.")
+    seed = st.number_input("Dataset seed", 0, 9999, 7, help="Each seed generates a different but similarly patterned dataset.")
+    days = st.slider("Days of history", 60, 240, 120, 10)
+    budget = st.slider("Daily budget (₹)", 80, 300, 150, 10, help="A day 'goes over' when spending exceeds this.")
 
+df, dd, R = load(seed, days, budget)
+clf, fc, rk, an, wk = R["classifier"], R["forecaster"], R["risk"], R["anomalies"], R["weeks"]
 
-def a_goal_add(s, b):
-    if not str(b.get("name", "")).strip() or r2(b.get("target")) <= 0: fail("Name and target needed")
-    s["goals"].append(dict(id=uid(), name=str(b["name"])[:40], target=r2(b["target"]), saved=0))
+tabs = st.tabs(["Data", "1 · Classifier", "2 · Forecaster", "3 · Overspend risk", "4 · Anomalies", "5 · Week types", "Stability"])
 
+with tabs[0]:
+    st.header("The dataset")
+    st.write("Synthetic spending for one student, generated with patterns a good model should find: Fridays and Saturdays "
+             "cost more, the days after the allowance arrives are splurgier, the month end is leaner, and three one-off big "
+             "purchases are hidden in the data as true anomalies.")
+    c = st.columns(4)
+    c[0].metric("Expenses", len(df)); c[1].metric("Days", len(dd)); c[2].metric("Average per day", money(dd["spent"].mean()))
+    c[3].metric("Days over budget", f"{dd['over'].mean():.0%}")
+    show(plots.eda(dd, budget))
+    show(plots.category_totals(df))
+    st.dataframe(df.assign(date=df["date"].dt.date), hide_index=True, width="stretch", height=260)
 
-def a_goal_money(s, b):
-    g = next((q for q in s["goals"] if q["id"] == b.get("id")), None) or fail("Goal not found")
-    a = r2(b.get("amount"))
-    lim = min(Engine(s).jar()["free"], g["target"] - g["saved"]) if a > 0 else -g["saved"]
-    if a == 0 or (a > 0 and a > lim + .001) or (a < 0 and a < lim - .001): fail("That amount doesn't fit")
-    g["saved"] = r2(g["saved"] + a)
+with tabs[1]:
+    st.header("1 · Category classifier")
+    st.write("**Concept:** supervised text classification. Each note (e.g. “uber to airport”) is turned into TF-IDF features "
+             "from words and character n-grams, and a multinomial **Logistic Regression** predicts one of eight categories.")
+    note = st.text_input("Try it: type something you might buy", "dominos with roommates")
+    for cat, p in models.predict_category(clf["model"], note):
+        st.progress(p, text=f"{cat} · {p:.0%}")
+    c = st.columns(4)
+    with c[0]: vs_baseline("Test accuracy", clf["accuracy"], clf["baseline_accuracy"])
+    c[1].metric("Cross-validated accuracy", f"{clf['cv_mean']:.1%}", f"± {clf['cv_std']:.1%} over {clf['cv_folds']} folds", delta_color="off")
+    c[2].metric("Macro F1", f"{clf['macro_f1']:.2f}"); c[3].metric("Labelled notes", clf["n_samples"])
+    st.caption(f"Split: 75/25 grouped by phrase, so every test note is a phrase the model never saw. Baseline: {clf['baseline']}.")
+    a, b = st.columns(2)
+    with a: show(plots.confusion(clf))
+    with b: show(plots.per_class_f1(clf))
 
+with tabs[2]:
+    st.header("2 · Spending forecaster")
+    st.write("**Concept:** supervised regression. A **Random Forest** predicts tomorrow's spend from calendar features "
+             "(weekday, days since payday) and lag features (yesterday, same day last week, 7- and 14-day averages). "
+             "Forecasts are made recursively: each predicted day feeds the next.")
+    c = st.columns(3)
+    with c[0]: vs_baseline("MAE per day", fc["mae"], fc["baseline_mae"], True, money)
+    with c[1]: vs_baseline("RMSE per day", fc["rmse"], fc["baseline_rmse"], True, money)
+    c[2].metric("Next 14 days (predicted)", money(R["forecast"]["predicted"].sum()))
+    st.caption(f"Split: time-ordered, train {fc['n_train']} days, test the last {fc['n_test']}. Baseline: {fc['baseline']}. "
+               f"One-off spikes above {money(fc['cap'])} are capped in training.")
+    show(plots.forecast_ahead(dd, R["forecast"], budget))
+    show(plots.forecast_test(fc))
 
-def a_goal_delete(s, b): s["goals"] = [g for g in s["goals"] if g["id"] != b.get("id")]
+with tabs[3]:
+    st.header("3 · Overspend risk")
+    st.write("**Concept:** supervised binary classification. A class-balanced **Logistic Regression** on standardised "
+             "features estimates the probability that a day ends over budget. ROC AUC is the main metric because it "
+             "doesn't depend on a threshold.")
+    c = st.columns(3)
+    c[0].metric("ROC AUC", f"{rk['auc']:.2f}", "0.50 = coin flip", delta_color="off")
+    with c[1]: vs_baseline("Accuracy at 0.5", rk["accuracy"], rk["baseline_accuracy"])
+    c[2].metric("Days over budget", f"{rk['base_rate']:.0%}")
+    a, b = st.columns([1, 2])
+    with a: show(plots.roc(rk))
+    with b: show(plots.importance(fc, rk))
+    st.subheader("Risk for the next 7 days")
+    ra = R["risk_ahead"].assign(day=lambda x: x.index.strftime("%a %d %b"))
+    st.bar_chart(ra.set_index("day")["risk"], y_label="Probability of going over", color="#6B5BB8")
 
+with tabs[4]:
+    st.header("4 · Anomaly detector")
+    st.write("**Concept:** unsupervised anomaly detection. An **Isolation Forest** isolates points with random splits; "
+             "unusual expenses need fewer splits. Features: log amount, amount ÷ category median, weekend, hour.")
+    st.metric("Flagged expenses", f"{int(an['anomaly'].sum())} of {len(an)}")
+    show(plots.anomalies(an))
+    flagged = an[an["anomaly"]].sort_values("score", ascending=False)
+    st.dataframe(flagged.assign(date=flagged["date"].dt.date)[["date", "note", "category", "amount", "reason", "score"]],
+                 hide_index=True, width="stretch")
 
-def a_settings(s, b):
-    if r2(b.get("monthly")) <= 0 or r2(b.get("daily")) <= 0: fail("Allowances must be above zero")
-    s["profile"].update(name=str(b.get("name", ""))[:30], monthly=r2(b["monthly"]), daily=r2(b["daily"]))
+with tabs[5]:
+    st.header("5 · Week types")
+    st.write("**Concept:** unsupervised clustering. Each week is described by its share of spending per category plus its "
+             "total, and **K-Means** (k = 3) groups similar weeks. Clusters are named from their centres.")
+    c = st.columns(3)
+    c[0].metric("Weeks", wk["n_weeks"]); c[1].metric("Silhouette", f"{wk['silhouette']:.2f}", "−1 to 1, higher = cleaner", delta_color="off")
+    c[2].metric("Latest week", wk["weeks"]["type"].iloc[-1])
+    show(plots.week_types(wk))
+    st.dataframe(wk["weeks"], hide_index=True, width="stretch")
 
-
-ACTIONS = dict(add=a_add, edit=a_edit, delete=a_delete, decide=a_decide, goal_add=a_goal_add, goal_money=a_goal_money,
-               goal_delete=a_goal_delete, settings=a_settings)
-
-
-def body_state():
-    b = request.get_json(silent=True) or {}
-    s = b.get("state")
-    if not isinstance(s, dict): fail("Missing state")
-    try:
-        return b, engine.normalize(s)
-    except (KeyError, TypeError, ValueError, AttributeError):
-        fail("That saved data looks damaged. Start fresh from Profile.")
-
-
-@app.get("/")
-def index(): return send_from_directory(PAGE_DIR, "index.html")  # plain file: the page is pure JS, no Jinja
-
-
-@app.get("/ChillarML.apk")
-def apk():
-    return send_from_directory(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"), "ChillarML.apk",
-                               mimetype="application/vnd.android.package-archive", as_attachment=True)
-
-
-@app.post("/api/setup")
-def setup():
-    b = request.get_json(silent=True) or {}
-    try:
-        prof = dict(name=str(b.get("name", ""))[:30], monthly=r2(b.get("monthly")), daily=r2(b.get("daily")),
-                    payday=int(min(31, max(1, int(b.get("payday") or 1)))))
-    except (TypeError, ValueError):
-        fail("Check your allowances")
-    if prof["monthly"] <= 0 or prof["daily"] <= 0: fail("Allowances must be above zero")
-    s = engine.sample_state(prof) if b.get("sample") else engine.blank_state(prof)
-    return jsonify(state=s, snap=snapshot(s))
-
-
-@app.post("/api/reset")
-def reset():
-    b, s = body_state()
-    prof = {k: s["profile"][k] for k in ("name", "monthly", "daily", "payday")}
-    s = engine.sample_state(prof) if b.get("sample") else engine.blank_state(prof)
-    return jsonify(state=s, snap=snapshot(s))
-
-
-@app.post("/api/do/<action>")
-def do(action):
-    fn = ACTIONS.get(action) or abort(404)
-    b, s = body_state()
-    fn(s, b)
-    s["updatedAt"] = time.time()
-    return jsonify(state=s, snap=snapshot(s))
-
-
-@app.post("/api/snapshot")
-def snap():
-    _, s = body_state()
-    return jsonify(state=s, snap=snapshot(s))
-
-
-# ---------- machine learning endpoints ----------
-# scikit-learn and pandas are imported on first use, so the plain money endpoints start fast on a cold server.
-def ml():
-    import ml as m
-    return m
-
-
-@app.post("/api/suggest")
-def suggest():
-    b, s = body_state()
-    return jsonify(ml().suggest(s, str(b.get("note", ""))[:80]))
-
-
-@app.post("/api/insights")
-def insights():
-    _, s = body_state()
-    return jsonify(ml().insights(s))
-
-
-@app.post("/api/lab")
-def lab():
-    b, s = body_state()
-    if b.get("retrain"): ml().forget(s)
-    M = ml().models(s, evaluate=True)
-    return jsonify(metrics=M["metrics"], trained_at=M["trained_at"], train_seconds=M["train_seconds"])
-
-
-# ---------- importing real UPI spending ----------
-def import_result(s, res, source):
-    s["updatedAt"] = time.time()
-    return jsonify(state=s, snap=snapshot(s), result=res, source=source)
-
-
-@app.post("/api/import/sms")
-def import_sms():
-    """Debits parsed on the phone by the Android app. The SMS text itself never leaves the phone."""
-    import importer
-    b, s = body_state()
-    txns = b.get("txns")
-    if not isinstance(txns, list): fail("No transactions sent")
-    return import_result(s, importer.add_transactions(s, txns, "sms", ml().suggest), "sms")
-
-
-@app.post("/api/import/statement")
-def import_statement():
-    """A PhonePe statement PDF, uploaded with the visitor's state as a form field."""
-    import json
-    import importer
-    f = request.files.get("file")
-    if not f: fail("Choose your PhonePe statement PDF")
-    try:
-        s = engine.normalize(json.loads(request.form.get("state", "")))
-    except (KeyError, TypeError, ValueError, AttributeError):
-        fail("Missing or damaged app data")
-    try:
-        text = importer.statement_text(f.read(), request.form.get("password", ""))
-    except ValueError as e:
-        fail(str(e))
-    except Exception:
-        fail("Couldn't read that PDF. Make sure it's the statement PhonePe emailed or downloaded.")
-    txns, credits = importer.parse_phonepe(text)
-    if not txns and not credits: fail("No PhonePe transactions found in that PDF.")
-    res = importer.add_transactions(s, txns, "phonepe", ml().suggest)
-    res["credits"] = credits
-    return import_result(s, res, "phonepe")
-
-
-@app.errorhandler(400)
-@app.errorhandler(404)
-@app.errorhandler(413)
-def err(e): return jsonify(error=e.description if isinstance(e.description, str) else "Bad request"), e.code
-
-
-if __name__ == "__main__":
-    app.run(debug=False, port=5050)
+with tabs[6]:
+    st.header("Stability across datasets")
+    st.write("One lucky dataset can flatter a model, so the three supervised models are re-run on five independently "
+             "generated datasets.")
+    tab = stability(days, budget)
+    show(plots.seeds(tab))
+    show = tab[["seed", "clf_cv", "clf_base", "fc_mae", "fc_base_mae", "risk_auc"]].rename(columns={
+        "clf_cv": "Classifier CV acc", "clf_base": "Majority baseline", "fc_mae": "Forecaster MAE", "fc_base_mae": "7-day avg MAE", "risk_auc": "Risk AUC"})
+    st.dataframe(show.style.format({"Classifier CV acc": "{:.1%}", "Majority baseline": "{:.1%}", "Forecaster MAE": "₹{:.0f}",
+                                    "7-day avg MAE": "₹{:.0f}", "Risk AUC": "{:.2f}"}), hide_index=True, width="stretch")

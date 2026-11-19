@@ -2,6 +2,4 @@
 __pycache__/
 *.pyc
 .vercel/
-data.json
 .DS_Store
-.vercel
